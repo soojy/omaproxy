@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.3
+
+- Anchor both supported backend archive digests in the plugin snapshot.
+- Bound checksum/archive downloads, total gzip expansion, and declared/actual executable sizes.
+- Validate raw tar headers and reject unexpected names, extensions, links, sparse files, duplicates, and trailing payloads before installing.
+- Preserve the existing executable on any validation failure; expand automated coverage to 51 tests.
+
 ## 0.1.2
 
 - Align the popup header with built-in Omarchy panels using PanelHero and the robot icon.

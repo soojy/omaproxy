@@ -45,7 +45,7 @@ omarchy plugin add https://github.com/soojy/omaproxy --enable
 ```
 
 1. Open **OmaProxy** from the robot icon in your bar.
-2. Choose **Set up proxy**. The plugin downloads a pinned CLIProxyAPI release, verifies its published SHA-256 checksum, and creates a user service.
+2. Choose **Set up proxy**. The plugin downloads a pinned CLIProxyAPI release, verifies its SHA-256 against architecture-specific digests pinned in this plugin, and creates a user service.
 3. Start the proxy, then select **Accounts → Add account** and finish the provider's browser sign-in.
 4. Open **Limits** to see your remaining allowance.
 
@@ -108,7 +108,7 @@ rm -f ~/.config/systemd/user/omaproxy.service
 systemctl --user daemon-reload
 ```
 
-The backend is version-pinned and is not silently updated by plugin updates. Stored credentials remain in `~/.config/omaproxy/` after removal. XDG overrides are supported; adjust the paths if you use them.
+The backend version and archive digests are pinned in the plugin and are not silently updated by plugin updates. See the [installer trust policy](docs/installer-security.md) for the reviewed digests and download/extraction limits. Stored credentials remain in `~/.config/omaproxy/` after removal. XDG overrides are supported; adjust the paths if you use them.
 
 ## Development
 

@@ -4,6 +4,7 @@ import argparse
 import concurrent.futures
 import fcntl
 import hashlib
+import gzip
 import json
 import os
 from pathlib import Path
@@ -26,6 +27,19 @@ DATA = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "om
 UNIT = "omaproxy.service"
 REPO = "router-for-me/CLIProxyAPI"
 VERSION = "v7.2.154"
+# Trust anchors reviewed with this plugin snapshot; never derive these at install
+# time from release metadata. A backend update must review and change these pins.
+ARCHIVE_SHA256 = {
+    "amd64": "2a2256ceff048d5fa813aa54e8daa43e870b40e698d5cd21efad46e25aa5a1f9",
+    "aarch64": "3a0cd18d64e3b9990ca72136dbb1da97eedddade00ee6768e8b49fab1de6925e",
+}
+CHECKSUM_MAX_BYTES = 64 * 1024
+ARCHIVE_MAX_BYTES = 32 * 1024 * 1024
+BINARY_MAX_BYTES = 64 * 1024 * 1024
+METADATA_MAX_BYTES = 128 * 1024
+EXPANDED_ARCHIVE_MAX_BYTES = 66 * 1024 * 1024
+DOWNLOAD_CHUNK_BYTES = 64 * 1024
+RELEASE_MEMBERS = {"cli-proxy-api", "LICENSE", "README.md", "README_CN.md", "config.example.yaml"}
 PROVIDERS = [
     ("claude", "Claude", "claude-login"),
     ("codex", "Codex", "codex-login"),
@@ -133,40 +147,124 @@ def status():
     return result
 
 
-def download(url):
+def download(url, max_bytes):
     req = urllib.request.Request(url, headers={"User-Agent": "OmaProxy/0.1"})
     with urllib.request.urlopen(req, timeout=90) as response:
-        return response.read()
+        declared = response.headers.get("Content-Length")
+        if declared is not None:
+            try:
+                length = int(declared)
+            except ValueError:
+                raise ValueError("Invalid download length; installation stopped.") from None
+            if length < 0 or length > max_bytes:
+                raise ValueError("Download exceeds size limit; installation stopped.")
+        result = bytearray()
+        while True:
+            chunk = response.read(min(DOWNLOAD_CHUNK_BYTES, max_bytes - len(result) + 1))
+            if not chunk:
+                break
+            if len(result) + len(chunk) > max_bytes:
+                raise ValueError("Download exceeds size limit; installation stopped.")
+            result.extend(chunk)
+        if declared is not None and len(result) != length:
+            raise ValueError("Download length mismatch; installation stopped.")
+        return bytes(result)
+
+
+def extract_binary(archive_path, binary_path):
+    # Only the exact reviewed flat, regular-file layout is accepted. Never use
+    # extract()/extractall(), basename matching, links, or archive-owned paths.
+    # Bound total inflation *before* tarfile parses extension headers or sizes.
+    with tempfile.TemporaryFile(dir=binary_path.parent) as expanded:
+        with gzip.open(archive_path, "rb") as compressed:
+            total = 0
+            while True:
+                chunk = compressed.read(min(DOWNLOAD_CHUNK_BYTES, EXPANDED_ARCHIVE_MAX_BYTES - total + 1))
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > EXPANDED_ARCHIVE_MAX_BYTES:
+                    raise ValueError("Expanded archive exceeds size limit; installation stopped.")
+                expanded.write(chunk)
+        expanded.seek(0)
+        _extract_reviewed_tar(expanded, binary_path)
+
+
+def _extract_reviewed_tar(expanded, binary_path):
+    # Inspect raw headers before tarfile can consume GNU/PAX extension records.
+    # TarInfo.frombuf only decodes one header and checks its checksum; it never
+    # reads an extension payload. The accepted format is five flat regular files.
+    seen = set()
+    candidate = None
+    while True:
+        header = expanded.read(512)
+        if len(header) != 512:
+            raise ValueError("Truncated release archive; installation stopped.")
+        if header == bytes(512):
+            if expanded.read(512) != bytes(512):
+                raise ValueError("Invalid archive terminator; installation stopped.")
+            while chunk := expanded.read(DOWNLOAD_CHUNK_BYTES):
+                if any(chunk):
+                    raise ValueError("Unexpected trailing archive data; installation stopped.")
+            break
+        member = tarfile.TarInfo.frombuf(header, "utf-8", "strict")
+        if (member.name not in RELEASE_MEMBERS or member.name in seen
+                or member.type not in (tarfile.REGTYPE, tarfile.AREGTYPE)
+                or header[:100].rstrip(b"\0") != member.name.encode("ascii")
+                or header[345:500].strip(b"\0")):
+            raise ValueError("Unexpected archive member name or type; installation stopped.")
+        seen.add(member.name)
+        ceiling = BINARY_MAX_BYTES if member.name == "cli-proxy-api" else METADATA_MAX_BYTES
+        if not 0 < member.size <= ceiling:
+            raise ValueError("Archive member exceeds size limit; installation stopped.")
+        if member.name == "cli-proxy-api":
+            candidate = (expanded.tell(), member.size)
+        expanded.seek(member.size, 1)
+        padding_size = (-member.size) % 512
+        if expanded.read(padding_size) != bytes(padding_size):
+            raise ValueError("Invalid archive member padding; installation stopped.")
+    if seen != RELEASE_MEMBERS or candidate is None:
+        raise ValueError("Release archive is missing expected files; installation stopped.")
+    offset, declared = candidate
+    expanded.seek(offset)
+    with binary_path.open("wb") as dest:
+        total = 0
+        while total < declared:
+            chunk = expanded.read(min(DOWNLOAD_CHUNK_BYTES, declared - total))
+            if not chunk:
+                raise ValueError("Extracted executable length mismatch; installation stopped.")
+            total += len(chunk)
+            if total > BINARY_MAX_BYTES or total > declared:
+                raise ValueError("Extracted executable exceeds size limit; installation stopped.")
+            dest.write(chunk)
+        if total != declared:
+            raise ValueError("Extracted executable length mismatch; installation stopped.")
+    binary_path.chmod(0o700)
 
 
 def install_binary():
     arch = {"x86_64": "amd64", "aarch64": "aarch64"}.get(platform.machine())
-    if platform.system() != "Linux" or not arch:
+    if platform.system() != "Linux" or arch not in ARCHIVE_SHA256:
         raise ValueError("Automatic installation supports Linux x86_64 and aarch64.")
     filename = f'CLIProxyAPI_{VERSION.lstrip("v")}_linux_{arch}.tar.gz'
     base = f"https://github.com/{REPO}/releases/download/{VERSION}/"
-    print(f"Downloading CLIProxyAPI {VERSION} ({arch}) and verifying SHA-256…", file=sys.stderr)
-    checksums = download(base + "checksums.txt").decode()
-    expected = next((line.split()[0] for line in checksums.splitlines()
-                     if len(line.split()) == 2 and line.split()[1].lstrip("*") == filename), None)
-    if not expected:
-        raise ValueError("Release checksum is missing; installation stopped.")
-    archive = download(base + filename)
+    expected = ARCHIVE_SHA256[arch]
+    print(f"Downloading CLIProxyAPI {VERSION} ({arch}) and verifying pinned SHA-256…", file=sys.stderr)
+    # The adjacent checksum is only a consistency check, never the trust anchor.
+    checksums = download(base + "checksums.txt", CHECKSUM_MAX_BYTES).decode("ascii")
+    reported = [line.split()[0] for line in checksums.splitlines()
+                if len(line.split()) == 2 and line.split()[1].lstrip("*") == filename]
+    if reported != [expected]:
+        raise ValueError("Release checksum does not match pinned digest; installation stopped.")
+    archive = download(base + filename, ARCHIVE_MAX_BYTES)
     if hashlib.sha256(archive).hexdigest() != expected:
         raise ValueError("Release checksum mismatch; installation stopped.")
     DATA.mkdir(parents=True, exist_ok=True, mode=0o700)
     with tempfile.TemporaryDirectory(dir=DATA) as temporary:
         path = Path(temporary) / "release.tar.gz"
         path.write_bytes(archive)
-        with tarfile.open(path) as bundle:
-            candidates = [m for m in bundle.getmembers() if m.isfile() and
-                          Path(m.name).name in ("cli-proxy-api", "cliproxyapi")]
-            if len(candidates) != 1:
-                raise ValueError("Release has no unambiguous proxy executable.")
-            binary = Path(temporary) / "cli-proxy-api"
-            with bundle.extractfile(candidates[0]) as source, binary.open("wb") as dest:
-                shutil.copyfileobj(source, dest)
-            binary.chmod(0o700)
+        binary = Path(temporary) / "cli-proxy-api"
+        extract_binary(path, binary)
         os.replace(binary, DATA / "cli-proxy-api")
     return str(DATA / "cli-proxy-api")
 
@@ -471,9 +569,11 @@ def main():
             subprocess.run(["journalctl", "--user", "-u", UNIT, "-n", "100", "-f"], check=False)
             return
         print(json.dumps(result))
-    except (ValueError, OSError, subprocess.SubprocessError, urllib.error.URLError) as exc:
+    except (ValueError, OSError, subprocess.SubprocessError, urllib.error.URLError, tarfile.TarError, EOFError) as exc:
         # HTTP bodies and command output can contain credentials; do not echo them.
-        if isinstance(exc, urllib.error.HTTPError):
+        if isinstance(exc, (tarfile.TarError, EOFError)):
+            message = "Invalid release archive; installation stopped."
+        elif isinstance(exc, urllib.error.HTTPError):
             message = f"Proxy API returned HTTP {exc.code}. Check the backend version and configuration."
         elif isinstance(exc, subprocess.TimeoutExpired):
             message = "Command timed out. Try again or check Logs for details."

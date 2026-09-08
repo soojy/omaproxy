@@ -104,7 +104,7 @@ class BridgeTests(unittest.TestCase):
             download.assert_not_called()
 
     def test_checksum_mismatch_does_not_install(self):
-        sums = b"000000  CLIProxyAPI_7.2.154_linux_amd64.tar.gz\n"
+        sums = (bridge.ARCHIVE_SHA256["amd64"] + "  CLIProxyAPI_7.2.154_linux_amd64.tar.gz\n").encode()
         with patch.object(bridge.platform, "machine", return_value="x86_64"), \
              patch.object(bridge, "download", side_effect=[sums, b"wrong archive"]):
             with self.assertRaisesRegex(ValueError, "checksum mismatch"):
