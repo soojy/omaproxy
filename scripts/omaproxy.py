@@ -231,7 +231,12 @@ def copy_value(kind):
     cfg = settings()
     values = {"endpoint": f'http://127.0.0.1:{cfg["port"]}/v1',
               "api-key": cfg["api_key"], "management-key": cfg["management_key"]}
-    run(["wl-copy", "--type", "text/plain"], input=values[kind])
+    # wl-copy forks a clipboard owner which can outlive this command. Captured
+    # output pipes stay open in that child, making communicate() wait until its
+    # timeout even though the copy succeeded. Neither output stream is needed.
+    subprocess.run(["wl-copy", "--type", "text/plain"], input=values[kind],
+                   text=True, check=True, stdout=subprocess.DEVNULL,
+                   stderr=subprocess.DEVNULL, timeout=5)
     return {"message": "Copied to clipboard."}
 
 

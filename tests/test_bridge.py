@@ -110,10 +110,13 @@ class BridgeTests(unittest.TestCase):
 
     def test_copy_uses_stdin_not_command_arguments(self):
         self.configure()
-        with patch.object(bridge, "run") as run:
+        with patch.object(bridge.subprocess, "run") as run:
             bridge.copy_value("api-key")
         self.assertEqual(run.call_args.kwargs["input"], "client-secret")
         self.assertNotIn("client-secret", run.call_args.args[0])
+        self.assertEqual(run.call_args.kwargs["stdout"], bridge.subprocess.DEVNULL)
+        self.assertEqual(run.call_args.kwargs["stderr"], bridge.subprocess.DEVNULL)
+        self.assertTrue(run.call_args.kwargs["check"])
 
     def test_api_uses_loopback_with_management_key(self):
         self.configure()

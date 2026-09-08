@@ -44,6 +44,13 @@ Panel {
             quotaPoll.running = true
         }
     }
+    function copyValue(kind) {
+        if (clipboard.running) return
+        noticeError = false
+        notice = ""
+        clipboard.command = ["python3", "-B", helper, "copy", kind]
+        clipboard.running = true
+    }
     function perform(args, payload) {
         if (busy) return
         noticeError = false
@@ -167,6 +174,15 @@ Panel {
         stdout: StdioCollector {
             onStreamFinished: {
                 try { root.receive(JSON.parse(text)) } catch (e) {}
+            }
+        }
+    }
+    Process {
+        id: clipboard
+        stdout: StdioCollector {
+            onStreamFinished: {
+                try { root.receive(JSON.parse(text)) }
+                catch (e) { root.notice = "Unable to copy to clipboard."; root.noticeError = true }
             }
         }
     }
@@ -546,8 +562,8 @@ Panel {
                         Label { width: parent.width; text: root.snapshot.endpoint || ""; wrapMode: Text.WrapAnywhere; opacity: 0.6; font.pixelSize: Style.font.bodySmall }
                         Row {
                             spacing: Style.space(6)
-                            ActionButton { text: "Copy endpoint"; onClicked: root.perform(["copy", "endpoint"]) }
-                            ActionButton { text: "Copy API key"; onClicked: root.perform(["copy", "api-key"]) }
+                            ActionButton { text: "Copy endpoint"; enabled: !clipboard.running; onClicked: root.copyValue("endpoint") }
+                            ActionButton { text: "Copy API key"; enabled: !clipboard.running; onClicked: root.copyValue("api-key") }
                         }
                         ActionButton {
                             text: (root.showingModels ? "Hide" : "Show") + " models (" + (root.snapshot.models || []).length + ")"
