@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.2
+
+- Align the popup header with built-in Omarchy panels using PanelHero and the robot icon.
+- Replace the running/stopped button with Omarchy’s native toggle, with keyboard and accessibility support.
+- Keep the power switch usable when the service is active but its API is unavailable; guard clicks during service transitions.
+- Refresh Limits and Accounts screenshots with concealed email labels.
+
 ## 0.1.1
 
 - Copy endpoint and API key immediately, without blocking proxy controls.

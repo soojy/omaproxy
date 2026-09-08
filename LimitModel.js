@@ -1,3 +1,10 @@
+function powerState(service) {
+    return {
+        checked: service === "active" || service === "reloading",
+        transitioning: ["activating", "deactivating", "reloading"].indexOf(service) >= 0
+    }
+}
+
 function quotaAccounts(cached, snapshot) {
     if (!snapshot.configured) return []
     if (!snapshot.running) return cached || []

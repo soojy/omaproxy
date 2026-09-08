@@ -31,6 +31,7 @@ Panel {
     property int authRevision: 0
     property double now: Date.now() / 1000
     readonly property bool busy: action.running
+    readonly property var proxyPower: Limits.powerState(snapshot.service)
     readonly property bool signingIn: auth.status === "wait"
     readonly property var quotaAccounts: Limits.quotaAccounts(quotaData.accounts, snapshot)
     readonly property int limitAccountCount: snapshot.running ? (snapshot.accounts || []).length : quotaAccounts.length
@@ -239,22 +240,47 @@ Panel {
                 id: heading
                 width: parent.width
                 spacing: Style.space(14)
-                Row {
+                PanelHero {
                     width: parent.width
-                    spacing: Style.space(12)
-                    Column {
-                        width: parent.width - statusButton.width - parent.spacing
-                        spacing: Style.space(4)
-                        Label { text: "OmaProxy"; font.pixelSize: Style.font.title; font.bold: true }
-                        Label { text: "ACCOUNT LIMITS"; opacity: 0.45; font.pixelSize: Style.font.caption; font.letterSpacing: 1.4 }
+                    title: "OmaProxy"
+                    meta: "Account limits"
+                    foreground: root.foreground
+                    fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+                    iconComponent: Component {
+                        Text {
+                            textFormat: Text.PlainText
+                            text: "󰚩"
+                            color: root.foreground
+                            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                            font.pixelSize: Style.font.display
+                        }
                     }
-                    ActionButton {
-                        id: statusButton
-                        visible: root.snapshot.configured
-                        text: root.snapshot.running ? "● Running" : "○ Stopped"
-                        active: root.snapshot.running
-                        enabled: !root.busy
-                        onClicked: root.perform([root.snapshot.running ? "stop" : "start"])
+                    trailingControl: Component {
+                        ToggleSwitch {
+                            id: powerSwitch
+                            visible: root.snapshot.configured
+                            checked: root.proxyPower.checked
+                            busy: root.busy || poll.running || root.proxyPower.transitioning
+                            foreground: root.foreground
+                            activeFocusOnTab: visible
+                            hasCursor: activeFocus
+                            Accessible.role: Accessible.CheckBox
+                            Accessible.name: "Proxy enabled"
+                            Accessible.checkable: true
+                            Accessible.checked: checked
+                            function activate() {
+                                if (!busy) root.perform([checked ? "stop" : "start"])
+                            }
+                            onToggled: activate()
+                            Keys.onReturnPressed: activate()
+                            Keys.onEnterPressed: activate()
+                            Keys.onSpacePressed: activate()
+                            PanelToolTip {
+                                visible: powerSwitch.containsMouse
+                                text: root.busy || root.proxyPower.transitioning ? "Updating proxy…" : powerSwitch.checked ? "Stop proxy" : "Start proxy"
+                                fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+                            }
+                        }
                     }
                 }
                 Row {
@@ -322,7 +348,7 @@ Panel {
                         }
                         Hint {
                             visible: !root.snapshot.running
-                            text: "Start the proxy to refresh limits. Previous readings stay visible."
+                            text: root.proxyPower.checked ? "Proxy API is unavailable. Previous readings stay visible." : "Start the proxy to refresh limits. Previous readings stay visible."
                         }
                         Column {
                             visible: root.limitAccountCount === 0

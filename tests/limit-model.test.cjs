@@ -33,3 +33,12 @@ assert.equal(model.quotaAccounts(cached, {configured: true, running: false, acco
 assert.equal(model.quotaAccounts(cached, {configured: true, running: true, accounts: [{name: 'kept'}]}).length, 1);
 assert.equal(model.quotaAccounts(cached, {configured: true, running: true, accounts: []}).length, 0);
 assert.equal(model.quotaAccounts(cached, {configured: false}).length, 0);
+
+// A live service can have an unhealthy API; it must remain switchable off.
+assert.equal(model.powerState('active').checked, true);
+assert.equal(model.powerState('active').transitioning, false);
+assert.equal(model.powerState('inactive').checked, false);
+assert.equal(model.powerState('failed').checked, false);
+for (const state of ['activating', 'deactivating', 'reloading']) {
+    assert.equal(model.powerState(state).transitioning, true);
+}
