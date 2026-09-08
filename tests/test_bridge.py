@@ -73,6 +73,15 @@ class BridgeTests(unittest.TestCase):
             self.assertFalse(bridge.status()["running"])
             api.assert_not_called()
 
+    def test_stopped_status_restores_persisted_quota_readings(self):
+        self.configure()
+        cached = {"accounts": [{"name": "example", "windows": [{"remaining_percent": 80}]}]}
+        bridge.private_write(self.config / "quotas.json", json.dumps(cached))
+        with patch.object(bridge, "systemctl", return_value=subprocess.CompletedProcess([], 3, "inactive\n", "")):
+            result = bridge.status()
+        self.assertFalse(result["running"])
+        self.assertEqual(result["quotas"], cached)
+
     def test_setup_preserves_configuration_and_detects_exact_flags(self):
         cfg = self.configure()
         original = "# hand edited\nport: 18317\n"
@@ -117,6 +126,32 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(run.call_args.kwargs["stdout"], bridge.subprocess.DEVNULL)
         self.assertEqual(run.call_args.kwargs["stderr"], bridge.subprocess.DEVNULL)
         self.assertTrue(run.call_args.kwargs["check"])
+
+    def test_authenticated_requests_reject_redirects(self):
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        import threading
+        received = []
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+            def do_GET(self):
+                received.append(self.path)
+                self.send_response(302)
+                self.send_header("Location", "/redirected")
+                self.end_headers()
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        try:
+            with self.assertRaises(urllib.error.HTTPError) as error:
+                bridge.request(f"http://127.0.0.1:{server.server_port}/original", "fake-secret")
+            self.assertEqual(error.exception.code, 302)
+            error.exception.close()
+            self.assertEqual(received, ["/original"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            worker.join()
 
     def test_api_uses_loopback_with_management_key(self):
         self.configure()

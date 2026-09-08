@@ -10,6 +10,11 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
+import sys
+
+sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
+import omaproxy
 import urllib.error
 import urllib.request
 
@@ -108,6 +113,24 @@ class BackendIntegration(unittest.TestCase):
         self.assertEqual(path, "/v1/chat/completions")
         self.assertEqual(key, "Bearer test-upstream-key")
         self.assertEqual(body["model"], "mock-model")
+
+    def test_bridge_adds_provider_without_replacing_existing_entries(self):
+        cfg = {"port": self.port, "api_key": "test-client-key", "management_key": "test-management-key"}
+        with patch.object(omaproxy, "settings", return_value=cfg), patch.object(omaproxy, "CONFIG", Path(self.temp.name)):
+            result = omaproxy.custom_provider({"name": "added", "url": f"http://127.0.0.1:{self.upstream.server_port}/v1",
+                "key": "fake-added-key", "models": "added-model"})
+            self.assertIn("added", result["message"])
+            entries = omaproxy.api("openai-compatibility")["openai-compatibility"]
+        self.assertEqual({entry["name"] for entry in entries}, {"mock", "added"})
+
+    def test_bridge_changes_routing_strategy(self):
+        cfg = {"port": self.port, "api_key": "test-client-key", "management_key": "test-management-key"}
+        with patch.object(omaproxy, "settings", return_value=cfg):
+            try:
+                omaproxy.api("routing/strategy", "PUT", {"value": "fill-first"})
+                self.assertEqual(omaproxy.api("routing/strategy")["strategy"], "fill-first")
+            finally:
+                omaproxy.api("routing/strategy", "PUT", {"value": "round-robin"})
 
     def test_streaming_completion(self):
         result = self.call("/v1/chat/completions", {"model": "test-model", "stream": True,

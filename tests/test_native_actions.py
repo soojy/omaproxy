@@ -1,4 +1,8 @@
 import json
+import io
+import subprocess
+import threading
+import concurrent.futures
 from pathlib import Path
 import sys
 import tempfile
@@ -79,6 +83,59 @@ class NativeActionTests(unittest.TestCase):
         self.assertTrue(after["stale"])
         self.assertEqual(after["windows"], before["windows"])
         self.assertEqual(after["updated_at"], before["updated_at"])
+
+    def test_poll_cannot_resurrect_cancelled_session(self):
+        self.session()
+        entered, release = threading.Event(), threading.Event()
+        cancel_started, cancel_entered = threading.Event(), threading.Event()
+        def api(route, *args, **kwargs):
+            if route.startswith("get-auth-status"):
+                entered.set()
+                self.assertTrue(release.wait(2))
+                return {"status": "wait"}
+            cancel_entered.set()
+            return {}
+        with patch.object(omaproxy, "api", side_effect=api), concurrent.futures.ThreadPoolExecutor(2) as pool:
+            poll = pool.submit(omaproxy.auth_action, "auth-status")
+            self.assertTrue(entered.wait(2))
+            def cancel_session():
+                cancel_started.set()
+                return omaproxy.auth_action("auth-cancel")
+            cancel = pool.submit(cancel_session)
+            self.assertTrue(cancel_started.wait(2))
+            try:
+                self.assertFalse(cancel_entered.wait(0.2), "Cancel must wait for the in-flight poll lock")
+            finally:
+                release.set()
+            poll.result(timeout=3)
+            cancel.result(timeout=3)
+        self.assertEqual(omaproxy.read_json(self.config / "oauth-session.json", None), {})
+
+    def test_browser_timeout_does_not_expose_signin_url(self):
+        session = self.session()
+        output = io.StringIO()
+        with patch.object(omaproxy, "settings", return_value={"configured": True}), \
+             patch.object(sys, "argv", ["omaproxy", "auth-open"]), \
+             patch.object(omaproxy, "run", side_effect=subprocess.TimeoutExpired(["xdg-open", session["url"]], 20)), \
+             patch.object(sys, "stdout", output):
+            self.assertEqual(omaproxy.main(), 1)
+        self.assertIn("timed out", output.getvalue())
+        self.assertNotIn("current-state", output.getvalue())
+        self.assertNotIn("https://", output.getvalue())
+
+    def test_bad_account_preserves_cache_without_breaking_other_accounts(self):
+        accounts = [{"name": n, "provider": "kimi", "auth_index": n} for n in ["bad", "good"]]
+        old = {"accounts": [dict(accounts[0], windows=[{"remaining_percent": 90}], updated_at=123)]}
+        omaproxy.private_write(self.config / "quotas.json", json.dumps(old))
+        def fetch(account, api):
+            if account["name"] == "bad":
+                raise AttributeError("malformed provider record")
+            return {"windows": [{"remaining_percent": 80}], "error": ""}
+        with patch.object(omaproxy, "api", return_value={"files": accounts}), patch.object(quotas, "fetch", side_effect=fetch):
+            result = omaproxy.quota_snapshot(force=True)["quotas"]["accounts"]
+        self.assertTrue(result[0]["stale"])
+        self.assertEqual(result[0]["updated_at"], 123)
+        self.assertEqual(result[1]["windows"][0]["remaining_percent"], 80)
 
     def test_custom_provider_rejects_credential_url(self):
         with self.assertRaises(ValueError):

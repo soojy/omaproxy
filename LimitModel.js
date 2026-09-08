@@ -1,3 +1,11 @@
+function quotaAccounts(cached, snapshot) {
+    if (!snapshot.configured) return []
+    if (!snapshot.running) return cached || []
+    return (cached || []).filter(function(q) {
+        return (snapshot.accounts || []).some(function(a) { return a.name === q.name })
+    })
+}
+
 function primaryWindows(windows) {
     var rows = windows || []
     var overall = rows.filter(function(row) { return /^weekly$/i.test(row.label || "") })

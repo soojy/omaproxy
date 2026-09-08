@@ -28,12 +28,12 @@ Panel {
     property bool showingModels: false
     property bool showingLogs: false
     property string logText: ""
+    property int authRevision: 0
     property double now: Date.now() / 1000
     readonly property bool busy: action.running
     readonly property bool signingIn: auth.status === "wait"
-    readonly property var quotaAccounts: (quotaData.accounts || []).filter(function(q) {
-        return (root.snapshot.accounts || []).some(function(a) { return a.name === q.name })
-    })
+    readonly property var quotaAccounts: Limits.quotaAccounts(quotaData.accounts, snapshot)
+    readonly property int limitAccountCount: snapshot.running ? (snapshot.accounts || []).length : quotaAccounts.length
     implicitWidth: button.implicitWidth
     implicitHeight: button.implicitHeight
 
@@ -53,6 +53,7 @@ Panel {
     }
     function perform(args, payload) {
         if (busy) return
+        if (args[0].indexOf("auth-") === 0) authRevision++
         noticeError = false
         notice = args[0] === "setup" ? "Downloading and verifying CLIProxyAPI…" : ""
         action.payload = payload === undefined ? "" : JSON.stringify(payload) + "\n"
@@ -149,6 +150,7 @@ Panel {
                         var wasRunning = root.snapshot.running
                         var oldNames = (root.snapshot.accounts || []).map(function(a) { return a.name }).join("|")
                         root.snapshot = result
+                        if (result.quotas) root.quotaData = result.quotas
                         var newNames = (result.accounts || []).map(function(a) { return a.name }).join("|")
                         if (root.opened && result.running && (!wasRunning || oldNames !== newNames)) root.refreshQuotas(false)
                     } else root.receive(result)
@@ -170,10 +172,12 @@ Panel {
     }
     Process {
         id: authPoll
+        property int revision: 0
+        onStarted: revision = root.authRevision
         command: ["python3", "-B", root.helper, "auth-status"]
         stdout: StdioCollector {
             onStreamFinished: {
-                try { root.receive(JSON.parse(text)) } catch (e) {}
+                try { if (authPoll.revision === root.authRevision && !root.busy) root.receive(JSON.parse(text)) } catch (e) {}
             }
         }
     }
@@ -303,7 +307,7 @@ Panel {
                             spacing: Style.space(8)
                             Column {
                                 width: parent.width - limitActions.width - parent.spacing
-                                Label { text: (root.snapshot.accounts || []).length + " connected account(s)"; font.bold: true }
+                                Label { text: root.limitAccountCount + (root.snapshot.running ? " connected account(s)" : " cached account(s)"); font.bold: true }
                                 Label { text: "Remaining allowance & reset times"; opacity: 0.5; font.pixelSize: Style.font.caption }
                             }
                             Row {
@@ -321,7 +325,7 @@ Panel {
                             text: "Start the proxy to refresh limits. Previous readings stay visible."
                         }
                         Column {
-                            visible: !(root.snapshot.accounts || []).length
+                            visible: root.limitAccountCount === 0
                             width: parent.width
                             spacing: Style.space(12)
                             Label { text: "No accounts yet"; font.pixelSize: Style.font.title; font.bold: true }

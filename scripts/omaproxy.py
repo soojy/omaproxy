@@ -39,7 +39,7 @@ PROVIDERS = [
 
 
 def run(args, check=True, **kwargs):
-    return subprocess.run(args, check=check, text=True, capture_output=True,
+    return subprocess.run(args, check=check, text=True, capture_output=kwargs.pop("capture_output", True),
                           timeout=kwargs.pop("timeout", 20), **kwargs)
 
 
@@ -62,6 +62,12 @@ def settings():
     return json.loads(path.read_text())
 
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        # Management and client credentials must stay at the selected endpoint.
+        return None
+
+
 def request(url, key=None, method="GET", body=None, timeout=4):
     headers = {"Accept": "application/json", "User-Agent": "OmaProxy/0.1"}
     if key:
@@ -71,7 +77,7 @@ def request(url, key=None, method="GET", body=None, timeout=4):
         headers["Content-Type"] = "application/json"
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     # Local control traffic must never leave via HTTP_PROXY/HTTPS_PROXY.
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
     with opener.open(req, timeout=timeout) as response:
         return json.load(response)
 
@@ -102,6 +108,7 @@ def status():
     result["service"] = state or "unknown"
     result["autostart"] = systemctl("is-enabled", check=False).stdout.strip() == "enabled"
     if state != "active":
+        result["quotas"] = read_json(CONFIG / "quotas.json", {"accounts": []})
         if state == "failed":
             result["error"] = "Proxy failed to start. Open Logs for details."
         return result
@@ -122,6 +129,7 @@ def status():
         result["running"] = True
     except (OSError, ValueError, urllib.error.URLError):
         result["error"] = "Service is active but its API is unavailable. Check Logs and configuration."
+        result["quotas"] = read_json(CONFIG / "quotas.json", {"accounts": []})
     return result
 
 
@@ -268,7 +276,7 @@ def quota_snapshot(force=False):
                 return dict(previous, **identity)
             try:
                 data = quotas.fetch(account, api)
-            except (OSError, ValueError, urllib.error.URLError, TypeError):
+            except (OSError, ValueError, urllib.error.URLError, TypeError, AttributeError, KeyError):
                 data = {"windows": [], "error": "Quota check could not reach the provider. Try again shortly."}
             now = time.time()
             if data.get("error") and previous.get("windows"):
@@ -292,6 +300,15 @@ AUTH_ROUTES = {"claude": "anthropic", "codex": "codex", "antigravity": "antigrav
 
 
 def auth_action(action, provider=None, payload=None):
+    # Each bar instance has its own poller. Serialize read/modify/write so a
+    # late poll cannot resurrect a cancelled session or replace a newer login.
+    CONFIG.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with (CONFIG / "oauth-session.lock").open("w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        return _auth_action(action, provider, payload)
+
+
+def _auth_action(action, provider=None, payload=None):
     path = CONFIG / "oauth-session.json"
     session = read_json(path, {})
     if action == "auth-start":
@@ -308,13 +325,13 @@ def auth_action(action, provider=None, payload=None):
                    "user_code": response.get("user_code", ""), "status": "wait", "started_at": time.time()}
         private_write(path, json.dumps(session))
         try:
-            run(["xdg-open", url])
+            run(["xdg-open", url], capture_output=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except (OSError, subprocess.SubprocessError):
             session["error"] = "Could not open the browser. Use Open sign-in page to retry."
     elif action == "auth-open":
         if not session.get("url"):
             raise ValueError("Start a sign-in first.")
-        run(["xdg-open", session["url"]])
+        run(["xdg-open", session["url"]], capture_output=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     elif session.get("state"):
         if action == "auth-cancel":
             api("oauth-session?" + urllib.parse.urlencode({"state": session["state"]}), "DELETE")
@@ -350,6 +367,13 @@ def logs_snapshot():
 
 
 def custom_provider(payload):
+    CONFIG.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with (CONFIG / "providers.lock").open("w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        return _custom_provider(payload)
+
+
+def _custom_provider(payload):
     name = str(payload.get("name", "")).strip()
     url = str(payload.get("url", "")).strip().rstrip("/")
     key = str(payload.get("key", "")).strip()
@@ -451,6 +475,8 @@ def main():
         # HTTP bodies and command output can contain credentials; do not echo them.
         if isinstance(exc, urllib.error.HTTPError):
             message = f"Proxy API returned HTTP {exc.code}. Check the backend version and configuration."
+        elif isinstance(exc, subprocess.TimeoutExpired):
+            message = "Command timed out. Try again or check Logs for details."
         elif isinstance(exc, subprocess.CalledProcessError):
             message = "Command failed. Check Logs for details."
         else:

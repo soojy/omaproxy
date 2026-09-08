@@ -55,6 +55,8 @@ def codex(payload, now=None):
     groups = [("", payload.get("rate_limit") or payload.get("rateLimit")),
               ("Code review · ", payload.get("code_review_rate_limit") or payload.get("codeReviewRateLimit"))]
     for extra in payload.get("additional_rate_limits", payload.get("additionalRateLimits", [])) or []:
+        if not isinstance(extra, dict):
+            continue
         groups.append((str(extra.get("limit_name") or extra.get("metered_feature") or "Additional") + " · ",
                        extra.get("rate_limit") or extra.get("rateLimit")))
     for prefix, group in groups:
@@ -98,12 +100,18 @@ def kimi(payload, now=None):
     if isinstance(payload.get("usage"), dict):
         items.append({"detail": payload["usage"], "name": "Weekly"})
     for i, item in enumerate(items):
+        if not isinstance(item, dict):
+            continue
         detail = item.get("detail") or item
+        if not isinstance(detail, dict):
+            continue
         limit, used = number(detail.get("limit")), number(detail.get("used"))
         if used is None and limit is not None and number(detail.get("remaining")) is not None:
             used = limit - number(detail["remaining"])
         percent = 100 * used / limit if used is not None and limit and limit > 0 else None
         period = item.get("window") or {}
+        if not isinstance(period, dict):
+            period = {}
         label = detail.get("name") or detail.get("title") or item.get("name")
         if not label:
             label = f'{period["duration"]} {period.get("timeUnit", "minutes").lower()}' if "duration" in period else f"Limit {i + 1}"
@@ -118,8 +126,12 @@ def kimi(payload, now=None):
 def antigravity(payload):
     windows = []
     for group in payload.get("groups", []) or []:
+        if not isinstance(group, dict):
+            continue
         name = group.get("displayName") or group.get("display_name") or "Models"
         for bucket in group.get("buckets", []) or []:
+            if not isinstance(bucket, dict):
+                continue
             remaining = number(bucket.get("remainingFraction", bucket.get("remaining_fraction")))
             label = bucket.get("window") or bucket.get("displayName") or "Quota"
             windows.append(window(f"{name} · {label}", None if remaining is None else 100 * (1 - remaining),

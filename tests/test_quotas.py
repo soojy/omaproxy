@@ -69,5 +69,11 @@ class QuotaTests(unittest.TestCase):
         self.assertNotIn("account-id", json.dumps(result))
 
 
+    def test_malformed_nested_records_are_skipped(self):
+        self.assertEqual(quotas.codex({"additional_rate_limits": [None, "bad"]})["windows"], [])
+        self.assertEqual(quotas.kimi({"limits": [None, {"detail": "bad"}]})["windows"], [])
+        self.assertEqual(quotas.antigravity({"groups": [None, {"buckets": [None]}]})["windows"], [])
+
+
 if __name__ == "__main__":
     unittest.main()

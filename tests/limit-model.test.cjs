@@ -27,3 +27,9 @@ assert.equal(model.maskEmails('Loaded person@example.com and second@example.org'
 assert.equal(model.maskEmails('person@example.com', false), 'person@example.com');
 assert.equal(model.maskEmails('No email', true), 'No email');
 console.log('Limit filtering and provider-specific plan labels passed.');
+
+const cached = [{name: 'kept'}, {name: 'removed'}];
+assert.equal(model.quotaAccounts(cached, {configured: true, running: false, accounts: []}).length, 2);
+assert.equal(model.quotaAccounts(cached, {configured: true, running: true, accounts: [{name: 'kept'}]}).length, 1);
+assert.equal(model.quotaAccounts(cached, {configured: true, running: true, accounts: []}).length, 0);
+assert.equal(model.quotaAccounts(cached, {configured: false}).length, 0);
