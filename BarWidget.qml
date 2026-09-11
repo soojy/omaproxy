@@ -251,14 +251,9 @@ Panel {
         bar: root.bar
         text: "󰚩"
         active: root.snapshot.running
+        useActiveColor: false
         tooltipText: "OmaProxy · " + (root.snapshot.running ? "Account limits" : root.remoteConnection ? "Remote server unavailable" : "Proxy stopped")
         onPressed: root.toggle()
-        Rectangle {
-            width: Style.space(5); height: width; radius: width / 2
-            anchors.right: parent.right; anchors.bottom: parent.bottom; anchors.margins: Style.space(3)
-            color: root.snapshot.running ? Color.accent : root.foreground
-            opacity: root.snapshot.running ? 1 : 0.35
-        }
     }
     KeyboardPanel {
         id: popup
