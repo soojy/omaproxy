@@ -29,6 +29,10 @@ Panel {
     property bool showingLogs: false
     property string logText: ""
     property int authRevision: 0
+    property int connectionRevision: 0
+    property bool changingConnection: false
+    property bool editRemote: false
+    readonly property bool remoteConnection: snapshot.mode === "remote"
     property double now: Date.now() / 1000
     readonly property bool busy: action.running
     readonly property var proxyPower: Limits.powerState(snapshot.service)
@@ -38,9 +42,9 @@ Panel {
     implicitWidth: button.implicitWidth
     implicitHeight: button.implicitHeight
 
-    function refresh() { if (!poll.running) poll.running = true }
+    function refresh() { if (!poll.running && !changingConnection) poll.running = true }
     function refreshQuotas(force) {
-        if (!quotaPoll.running && snapshot.running) {
+        if (!quotaPoll.running && snapshot.running && !changingConnection) {
             quotaPoll.command = ["python3", "-B", helper, "quotas"].concat(force ? ["--force"] : [])
             quotaPoll.running = true
         }
@@ -54,9 +58,11 @@ Panel {
     }
     function perform(args, payload) {
         if (busy) return
+        changingConnection = args[0] === "connection-save" || args[0] === "connection-local"
+        if (changingConnection) { connectionRevision++; authRevision++ }
         if (args[0].indexOf("auth-") === 0) authRevision++
         noticeError = false
-        notice = args[0] === "setup" ? "Downloading and verifying CLIProxyAPI…" : ""
+        notice = args[0] === "setup" ? "Downloading and verifying CLIProxyAPI…" : changingConnection ? "Checking connection…" : ""
         action.payload = payload === undefined ? "" : JSON.stringify(payload) + "\n"
         action.stdinEnabled = action.payload !== ""
         action.command = ["python3", "-B", helper].concat(args)
@@ -64,6 +70,18 @@ Panel {
     }
     function receive(result) {
         if (result.error) { noticeError = true; notice = result.error; return }
+        if (result.connection_changed) {
+            snapshot = ({configured: false, running: false, accounts: [], models: [], providers: [], connection_id: result.connection_id})
+            quotaData = ({accounts: []})
+            auth = ({})
+            preferences = ({})
+            revealedEmails = ({})
+            logText = ""
+            showingLogs = false
+            addingAccount = false
+            addingKey = false
+            editRemote = false
+        }
         if (result.auth !== undefined) {
             var wasWaiting = signingIn
             auth = result.auth
@@ -120,8 +138,8 @@ Panel {
     }
 
     onOpenedChanged: {
-        if (opened) { refresh(); refreshQuotas(false); if (snapshot.configured && !authPoll.running) authPoll.running = true }
-        else revealedEmails = ({})
+        if (opened) { refresh(); refreshQuotas(false); if (snapshot.configured && !remoteConnection && !authPoll.running) authPoll.running = true }
+        else { revealedEmails = ({}); remoteManagementKey.text = ""; remoteApiKey.text = "" }
     }
     onPageChanged: { scroll.contentY = 0; if (page === 2 && snapshot.running) perform(["preferences"]) }
     Component.onCompleted: refresh()
@@ -142,12 +160,25 @@ Panel {
     }
     Process {
         id: poll
+        property int revision: 0
+        onStarted: revision = root.connectionRevision
+        onExited: if (revision !== root.connectionRevision) Qt.callLater(root.refresh)
         command: ["python3", "-B", root.helper, "status"]
         stdout: StdioCollector {
             onStreamFinished: {
+                if (poll.revision !== root.connectionRevision || root.changingConnection) return
                 try {
                     var result = JSON.parse(text)
                     if (result.configured !== undefined) {
+                        if (result.connection_id !== root.snapshot.connection_id) {
+                            root.connectionRevision++
+                            root.authRevision++
+                            root.quotaData = ({accounts: []})
+                            root.auth = ({})
+                            root.preferences = ({})
+                            root.revealedEmails = ({})
+                            remoteUrl.text = result.base_url || result.remote_base_url || ""
+                        }
                         var wasRunning = root.snapshot.running
                         var oldNames = (root.snapshot.accounts || []).map(function(a) { return a.name }).join("|")
                         root.snapshot = result
@@ -161,10 +192,15 @@ Panel {
     }
     Process {
         id: quotaPoll
+        property int revision: 0
+        onStarted: revision = root.connectionRevision
+        onExited: if (revision !== root.connectionRevision) Qt.callLater(function() { root.refreshQuotas(false) })
         stdout: StdioCollector {
             onStreamFinished: {
+                if (quotaPoll.revision !== root.connectionRevision || root.changingConnection) return
                 try {
                     var result = JSON.parse(text)
+                    if (result.connection_id !== root.snapshot.connection_id) return
                     if (result.quotas) root.quotaData = result.quotas
                     else root.receive(result)
                 } catch (e) { root.notice = "Unable to read account limits."; root.noticeError = true }
@@ -195,6 +231,7 @@ Panel {
         id: action
         property string payload: ""
         onStarted: if (payload !== "") { write(payload); payload = "" }
+        onExited: { root.changingConnection = false; Qt.callLater(root.refresh) }
         stdout: StdioCollector {
             onStreamFinished: {
                 try { root.receive(JSON.parse(text)) }
@@ -205,7 +242,7 @@ Panel {
     }
     Timer { interval: root.opened ? 5000 : 20000; running: true; repeat: true; onTriggered: root.refresh() }
     Timer { interval: 60000; running: root.opened && root.snapshot.running; repeat: true; onTriggered: root.refreshQuotas(false) }
-    Timer { interval: 2000; running: root.signingIn; repeat: true; onTriggered: if (!authPoll.running && !root.busy) authPoll.running = true }
+    Timer { interval: 2000; running: root.signingIn && !root.remoteConnection; repeat: true; onTriggered: if (!authPoll.running && !root.busy) authPoll.running = true }
     Timer { interval: 10000; running: root.opened; repeat: true; onTriggered: root.now = Date.now() / 1000 }
 
     BarIconButton {
@@ -214,7 +251,7 @@ Panel {
         bar: root.bar
         text: "󰚩"
         active: root.snapshot.running
-        tooltipText: "OmaProxy · " + (root.snapshot.running ? "Account limits" : "Proxy stopped")
+        tooltipText: "OmaProxy · " + (root.snapshot.running ? "Account limits" : root.remoteConnection ? "Remote server unavailable" : "Proxy stopped")
         onPressed: root.toggle()
         Rectangle {
             width: Style.space(5); height: width; radius: width / 2
@@ -258,7 +295,7 @@ Panel {
                     trailingControl: Component {
                         ToggleSwitch {
                             id: powerSwitch
-                            visible: root.snapshot.configured
+                            visible: root.snapshot.configured && !root.remoteConnection
                             checked: root.proxyPower.checked
                             busy: root.busy || poll.running || root.proxyPower.transitioning
                             foreground: root.foreground
@@ -315,11 +352,12 @@ Panel {
                     spacing: Style.space(16)
 
                     Column {
-                        visible: !root.snapshot.configured
+                        visible: !root.snapshot.configured && root.page !== 2
                         width: parent.width
                         spacing: Style.space(16)
                         Label { text: "Your accounts. Your remaining capacity."; font.bold: true; width: parent.width; wrapMode: Text.WordWrap }
-                        Hint { text: "Set up the local proxy to see account limits and reset times here." }
+                        Hint { text: "Connect to an existing server or set up a local proxy to see account limits." }
+                        ActionButton { text: "Connect to remote server"; enabled: !root.busy; onClicked: { root.editRemote = true; root.page = 2 } }
                         ActionButton { text: root.busy ? "Installing…" : "Set up proxy"; enabled: !root.busy; onClicked: root.perform(["setup"]) }
                         Hint { text: "Downloads and verifies CLIProxyAPI, then creates your user service. Progress stays here." }
                     }
@@ -348,7 +386,7 @@ Panel {
                         }
                         Hint {
                             visible: !root.snapshot.running
-                            text: root.proxyPower.checked ? "Proxy API is unavailable. Previous readings stay visible." : "Start the proxy to refresh limits. Previous readings stay visible."
+                            text: root.remoteConnection ? "Remote server unavailable. Previous readings stay visible. Check the connection in Settings." : root.proxyPower.checked ? "Proxy API is unavailable. Previous readings stay visible." : "Start the proxy to refresh limits. Previous readings stay visible."
                         }
                         Column {
                             visible: root.limitAccountCount === 0
@@ -454,9 +492,9 @@ Panel {
                         Row {
                             width: parent.width
                             Label { text: "Connected accounts"; font.bold: true; width: parent.width - addAccount.width }
-                            ActionButton { id: addAccount; text: root.addingAccount ? "Done" : "+ Add account"; onClicked: root.addingAccount = !root.addingAccount }
+                            ActionButton { id: addAccount; text: root.remoteConnection ? "Manage accounts" : root.addingAccount ? "Done" : "+ Add account"; enabled: !root.busy; onClicked: { if (root.remoteConnection) root.perform(["dashboard"]); else root.addingAccount = !root.addingAccount } }
                         }
-                        Hint { visible: !(root.snapshot.accounts || []).length; text: "Add a subscription account. Browser sign-in returns to this plugin automatically." }
+                        Hint { visible: root.remoteConnection || !(root.snapshot.accounts || []).length; text: root.remoteConnection ? "Add accounts in the server's management panel. Changes here affect that server's clients." : "Add a subscription account. Browser sign-in returns to this plugin automatically." }
                         Repeater {
                             model: root.snapshot.accounts || []
                             Row {
@@ -503,7 +541,7 @@ Panel {
                             }
                         }
                         Column {
-                            visible: root.addingAccount && !root.signingIn
+                            visible: root.addingAccount && !root.signingIn && !root.remoteConnection
                             width: parent.width
                             spacing: Style.space(8)
                             PanelSeparator { foreground: root.foreground }
@@ -547,9 +585,42 @@ Panel {
                     }
 
                     Column {
-                        visible: root.snapshot.configured && root.page === 2
+                        visible: root.page === 2
                         width: parent.width
                         spacing: Style.space(14)
+                        Label { text: "Connection"; font.bold: true }
+                        Hint { text: root.remoteConnection ? "Remote server · " + (root.snapshot.base_url || "") : "Local proxy" }
+                        Row {
+                            spacing: Style.space(6)
+                            ActionButton {
+                                text: "Local"
+                                active: !root.remoteConnection && !root.editRemote
+                                enabled: !root.busy
+                                onClicked: { if (root.remoteConnection) root.perform(["connection-local"]); else root.editRemote = false }
+                            }
+                            ActionButton { text: "Remote"; active: root.remoteConnection || root.editRemote; enabled: !root.busy; onClicked: root.editRemote = true }
+                        }
+                        Column {
+                            visible: root.remoteConnection || root.editRemote || !root.snapshot.configured
+                            width: parent.width
+                            spacing: Style.space(8)
+                            Hint { text: "Enter the server base URL without /v1. Use HTTPS, or localhost HTTP for an SSH tunnel." }
+                            Field { id: remoteUrl; placeholderText: "Server URL, e.g. https://proxy.example.com"; text: root.snapshot.base_url || root.snapshot.remote_base_url || ""; enabled: !root.busy }
+                            Field { id: remoteManagementKey; placeholderText: "Management key"; password: true; enabled: !root.busy }
+                            Field { id: remoteApiKey; placeholderText: "Client API key (optional, for models)"; password: true; enabled: !root.busy }
+                            Hint { text: "Blank keys keep saved values for the same URL. The management key enables accounts and quotas; the client key enables model discovery." }
+                            ActionButton {
+                                text: root.changingConnection ? "Checking…" : "Test and save connection"
+                                enabled: !root.busy && remoteUrl.text.trim() !== ""
+                                onClicked: {
+                                    root.perform(["connection-save"], {base_url: remoteUrl.text, management_key: remoteManagementKey.text, api_key: remoteApiKey.text})
+                                    remoteManagementKey.text = ""
+                                    remoteApiKey.text = ""
+                                }
+                            }
+                        }
+                        ActionButton { visible: !root.snapshot.configured && !root.editRemote; text: "Set up local proxy"; enabled: !root.busy; onClicked: root.perform(["setup"]) }
+                        PanelSeparator { foreground: root.foreground }
                         Label { text: "Display"; font.bold: true }
                         ActionButton {
                             text: "Extra limits: " + (root.showExtraLimits ? "On" : "Off")
@@ -558,13 +629,15 @@ Panel {
                             onClicked: root.setDisplaySetting("showExtraLimits", !root.showExtraLimits)
                         }
                         PanelSeparator { foreground: root.foreground }
-                        Label { text: "Proxy settings"; font.bold: true }
+                        Label { visible: root.snapshot.configured && !root.remoteConnection; text: "Proxy settings"; font.bold: true }
                         ActionButton {
+                            visible: root.snapshot.configured && !root.remoteConnection
                             text: "Launch at login: " + (root.snapshot.autostart ? "On" : "Off")
                             active: !!root.snapshot.autostart; enabled: !root.busy
                             onClicked: root.perform(["autostart", root.snapshot.autostart ? "off" : "on"])
                         }
                         Row {
+                            visible: root.snapshot.configured && !root.remoteConnection
                             spacing: Style.space(6)
                             ActionButton { text: "Restart proxy"; enabled: !root.busy; onClicked: root.perform(["restart"]) }
                             ActionButton {
@@ -573,7 +646,7 @@ Panel {
                             }
                         }
                         Column {
-                            visible: root.showingLogs
+                            visible: root.showingLogs && !root.remoteConnection
                             width: parent.width
                             spacing: Style.space(8)
                             ActionButton { text: "Refresh logs"; enabled: !root.busy; onClicked: root.perform(["logs-view"]) }
@@ -592,8 +665,8 @@ Panel {
                         Label { width: parent.width; text: root.snapshot.endpoint || ""; wrapMode: Text.WrapAnywhere; opacity: 0.6; font.pixelSize: Style.font.bodySmall }
                         Row {
                             spacing: Style.space(6)
-                            ActionButton { text: "Copy endpoint"; enabled: !clipboard.running; onClicked: root.copyValue("endpoint") }
-                            ActionButton { text: "Copy API key"; enabled: !clipboard.running; onClicked: root.copyValue("api-key") }
+                            ActionButton { text: "Copy endpoint"; enabled: root.snapshot.configured && !clipboard.running; onClicked: root.copyValue("endpoint") }
+                            ActionButton { text: "Copy API key"; enabled: root.snapshot.configured && !clipboard.running && (!root.remoteConnection || root.snapshot.has_api_key); onClicked: root.copyValue("api-key") }
                         }
                         ActionButton {
                             text: (root.showingModels ? "Hide" : "Show") + " models (" + (root.snapshot.models || []).length + ")"
@@ -609,14 +682,16 @@ Panel {
                             }
                             Hint { visible: !(root.snapshot.models || []).length; text: "No models reported by the enabled accounts." }
                         }
-                        Label { text: "CLIProxyAPI " + (root.snapshot.version || "custom"); opacity: 0.35; font.pixelSize: Style.font.caption }
+                        Hint { visible: !!root.snapshot.model_error; text: root.snapshot.model_error || "" }
+                        Hint { visible: root.remoteConnection && !root.snapshot.has_api_key; text: "Add a client API key above to list models." }
+                        Label { text: root.remoteConnection ? "CLIProxyAPI · Remote" : "CLIProxyAPI " + (root.snapshot.version || "custom"); opacity: 0.35; font.pixelSize: Style.font.caption }
                     }
                 }
             }
             Label {
                 id: feedback
                 width: parent.width; anchors.bottom: parent.bottom
-                text: root.notice || root.snapshot.error || (quotaPoll.running ? "Refreshing account limits…" : "LOCAL PROXY · PRIVATE CREDENTIALS")
+                text: root.notice || root.snapshot.error || (quotaPoll.running ? "Refreshing account limits…" : root.remoteConnection ? "REMOTE SERVER · " + (root.snapshot.running ? "CONNECTED" : "UNAVAILABLE") : "LOCAL PROXY · PRIVATE CREDENTIALS")
                 color: root.noticeError || root.snapshot.error ? Color.accent : root.foreground
                 opacity: root.notice || root.snapshot.error ? 1 : 0.4
                 wrapMode: Text.WordWrap; maximumLineCount: 3; elide: Text.ElideRight
