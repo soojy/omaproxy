@@ -80,6 +80,19 @@ Quota checks refresh once a minute while the popup is open. Manual Refresh bypas
 
 ### Bring your own backend
 
+To connect to an existing server, open **Settings → Connection → Remote**.
+Enter its base URL (without `/v1`), management key, and optionally a client API
+key for model discovery, then choose **Test and save connection**. No local
+CLIProxyAPI installation is required. Accounts and quotas use the management
+key; provider OAuth credentials remain on the server.
+
+Use HTTPS, or loopback HTTP through an existing SSH tunnel. Remote mode shows
+connection health instead of local service controls. Add new accounts through
+**Manage accounts**, which opens the server's management panel. See
+[remote configuration](docs/configuration.md#remote-connections) for details.
+
+For a custom **local executable**:
+
 ```bash
 python3 ~/.config/omarchy/plugins/soojy.omaproxy/scripts/omaproxy.py setup \
   --binary /absolute/path/to/cli-proxy-api-plus
