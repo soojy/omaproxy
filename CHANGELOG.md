@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.4
+
+- Fix generated systemd WorkingDirectory syntax so fresh installations can start.
+- Repair the known quoted directory from older service files before Start, Restart, or enabling launch at login. Preserve custom service settings, credentials, and the backend; back up the original unit and retry safely if daemon-reload fails.
+- Add a standalone `repair` command and seven regression tests, including validation with the real systemd unit parser.
+
 ## 0.1.3
 
 - Anchor both supported backend archive digests in the plugin snapshot.

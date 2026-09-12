@@ -105,6 +105,8 @@ def api(route, method="GET", body=None, timeout=4):
 
 
 def systemctl(*args, check=True):
+    if args and args[0] in ("start", "restart", "enable"):
+        repair_service()
     return run(["systemctl", "--user", *args, UNIT], check=check)
 
 
@@ -274,9 +276,56 @@ def unit_quote(value):
     return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%").replace("$", "$$") + '"'
 
 
+def unit_working_directory(path):
+    # Unlike ExecStart arguments, WorkingDirectory is a single literal path:
+    # surrounding quotes become part of the path, and $ is not expanded.
+    value = str(path)
+    if (not Path(value).is_absolute() or value != value.strip()
+            or any(ord(c) < 32 for c in value) or value.endswith("\\")):
+        raise ValueError("Unsupported service working-directory path.")
+    return value.replace("%", "%%")
+
+
+def repair_service():
+    """Migrate only the known quoted WorkingDirectory emitted by <= 0.1.3."""
+    unit_dir = CONFIG.parent / "systemd/user"
+    path = unit_dir / UNIT
+    if not path.exists():
+        return False
+    with (unit_dir / ".omaproxy-unit.lock").open("w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        original = path.read_text()
+        broken = "WorkingDirectory=" + unit_quote(CONFIG)
+        fixed = "WorkingDirectory=" + unit_working_directory(CONFIG)
+        section = ""
+        lines = []
+        changed = False
+        for line in original.splitlines(keepends=True):
+            if line.strip().startswith("["):
+                section = line.strip()
+            if section == "[Service]" and line.rstrip("\r\n") == broken:
+                line = fixed + ("\n" if line.endswith("\n") else "")
+                changed = True
+            lines.append(line)
+        if not changed:
+            return False
+        backup = unit_dir / (UNIT + ".before-working-directory-fix")
+        if not backup.exists():
+            private_write(backup, original)
+        private_write(path, "".join(lines))
+        try:
+            run(["systemctl", "--user", "daemon-reload"])
+        except (OSError, subprocess.SubprocessError):
+            # Leave the recognizable old line so the next attempt retries reload.
+            private_write(path, original)
+            raise
+        return True
+
+
 def setup(binary=None, port=8317):
     if not 1024 <= port <= 65535:
         raise ValueError("Port must be between 1024 and 65535.")
+    working_directory = unit_working_directory(CONFIG)
     cfg = settings()
     if binary:
         binary = str(Path(binary).expanduser().resolve(strict=True))
@@ -311,7 +360,7 @@ def setup(binary=None, port=8317):
         "[Unit]", "Description=OmaProxy local AI proxy", "After=network-online.target", "",
         "[Service]", "Type=simple",
         f"ExecStart={unit_quote(binary)} --config {unit_quote(CONFIG / 'config.yaml')}",
-        f"WorkingDirectory={unit_quote(CONFIG)}",
+        f"WorkingDirectory={working_directory}",
         "Restart=on-failure", "RestartSec=3", "UMask=0077", "NoNewPrivileges=true", "",
         "[Install]", "WantedBy=default.target", ""])
     private_write(unit_dir / UNIT, unit)
@@ -503,7 +552,7 @@ def main():
     p.add_argument("--binary", help="Use a local CLIProxyAPI or Plus executable")
     p.add_argument("--port", type=int, default=8317)
     for name in ("status", "start", "stop", "restart", "dashboard", "logs", "config", "logs-view",
-                 "auth-status", "auth-cancel", "auth-open", "auth-callback", "custom-add", "preferences"):
+                 "auth-status", "auth-cancel", "auth-open", "auth-callback", "custom-add", "preferences", "repair"):
         sub.add_parser(name)
     p = sub.add_parser("quotas")
     p.add_argument("--force", action="store_true")
@@ -529,6 +578,9 @@ def main():
             result = status()
         elif not settings():
             raise ValueError("Set up the proxy first.")
+        elif args.action == "repair":
+            changed = repair_service()
+            result = {"message": "Service repaired." if changed else "Service needs no repair."}
         elif args.action == "quotas":
             result = quota_snapshot(args.force)
         elif args.action.startswith("auth-"):

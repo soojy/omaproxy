@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "soojy.omaproxy",
   "name": "OmaProxy",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "author": "soojy",
   "license": "MIT",
   "description": "AI account quotas, remaining allowances, and reset times in Omarchy, with native account and proxy management.",
