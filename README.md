@@ -49,7 +49,7 @@ omarchy plugin add https://github.com/soojy/omaproxy --enable
 ```
 
 1. Open **OmaProxy** from the robot icon in your bar.
-2. Choose **Set up proxy**. The plugin downloads a pinned CLIProxyAPI release, verifies its SHA-256 against architecture-specific digests pinned in this plugin, and creates a user service.
+2. Once a backend release has security approval, choose **Set up proxy**. The plugin verifies its pinned architecture-specific SHA-256 and creates a user service. Automatic setup is currently withheld; see the [security assessment](docs/backend-security.md).
 3. Start the proxy, then select **Accounts → Add account** and finish the provider's browser sign-in.
 4. Open **Limits** to see your remaining allowance.
 
@@ -76,7 +76,7 @@ Choose a model from **Settings → Show models**. Provider OAuth tokens stay wit
 | xAI | ✓ | Not yet supported |
 | OpenAI-compatible API endpoints | API-key form | Not yet supported |
 
-¹ The installer pins **CLIProxyAPI v7.2.154**. Gemini, Qwen, and GitHub Copilot require a compatible backend; unsupported login options are hidden. Provider capabilities and quota endpoints can change.
+¹ The installer pins a reviewed CLIProxyAPI release; see the [installer trust policy](docs/installer-security.md). Gemini, Qwen, and GitHub Copilot require a compatible backend; unsupported login options are hidden. Provider capabilities and quota endpoints can change.
 
 Codex's `prolite` plan is displayed as **PRO · 5×** and `pro` as **PRO · 20×**. These labels describe plan tiers, not remaining tokens or temporary promotions. Monthly-only plans show their overall monthly allowance instead of an invented weekly window.
 
@@ -102,7 +102,7 @@ python3 ~/.config/omarchy/plugins/soojy.omaproxy/scripts/omaproxy.py setup \
   --binary /absolute/path/to/cli-proxy-api-plus
 ```
 
-OmaProxy creates its own configuration and credentials; it does not adopt another proxy's process or tokens. Use `--port 18317` on initial setup if 8317 is occupied. Re-running setup preserves existing settings; restart the proxy after replacing an active backend.
+OmaProxy creates its own configuration and credentials; it does not adopt another proxy's process or tokens. Use `--port 18317` on initial setup if 8317 is occupied. Existing managed installations use the explicit backend update action. A user-selected `setup --binary` preserves configuration; restart the proxy after replacing an active custom backend.
 
 ## Privacy and local storage
 
@@ -125,7 +125,9 @@ rm -f ~/.config/systemd/user/omaproxy.service
 systemctl --user daemon-reload
 ```
 
-The backend version and archive digests are pinned in the plugin and are not silently updated by plugin updates. See the [installer trust policy](docs/installer-security.md) for the reviewed digests and download/extraction limits. Stored credentials remain in `~/.config/omaproxy/` after removal. XDG overrides are supported; adjust the paths if you use them.
+Plugin updates leave the installed backend running. In **Settings → Backend updates**, check the actual installed version and latest upstream version or restore a permitted previous state. Automatic setup and upgrades are currently withheld because the pinned and latest checked official binaries have unresolved vulnerability advisories. See the [security assessment](docs/backend-security.md). An approved update will require `bwrap` and isolated configuration validation; a running proxy briefly restarts and a stopped proxy stays stopped.
+
+See the [backend update and recovery guide](docs/backend-updates.md) and [installer trust policy](docs/installer-security.md). Stored credentials remain in `~/.config/omaproxy/` after removal. XDG overrides are supported; adjust the paths if you use them.
 
 ### Upgrading from 0.1.3 or earlier
 
@@ -163,6 +165,8 @@ See [Codex and T3 compatibility checks](docs/client-compatibility.md) for Respon
 Use the [isolated native preview](docs/native-preview.md) to exercise the panel with fake receipts and installed Omarchy components without changing your live plugin or service.
 
 [Contributing](CONTRIBUTING.md) · [Architecture](docs/architecture.md) · [Report a bug](https://github.com/soojy/omaproxy/issues/new?template=bug_report.md)
+
+Use the [isolated native preview](docs/native-preview.md) to exercise updater controls with fake accounts in the installed Omarchy QML components. It leaves your configured plugin and backend untouched.
 
 ## Credits
 

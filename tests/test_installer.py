@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parents[1] / 'scripts'))
 import omaproxy as bridge
+import backend_security
 
 
 class Response(io.BytesIO):
@@ -27,6 +28,9 @@ class Response(io.BytesIO):
 
 class InstallerTests(unittest.TestCase):
     def setUp(self):
+        approval = patch.object(backend_security, 'APPROVED_RELEASES', frozenset(
+            (bridge.VERSION, arch, digest) for arch, digest in bridge.ARCHIVE_SHA256.items()))
+        approval.start(); self.addCleanup(approval.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
@@ -79,7 +83,7 @@ class InstallerTests(unittest.TestCase):
     def test_replaced_checksum_and_archive_cannot_replace_installed_binary(self):
         bad_archive = b'replaced release'
         digest = hashlib.sha256(bad_archive).hexdigest()
-        checksums = f'{digest}  CLIProxyAPI_7.2.154_linux_amd64.tar.gz\n'.encode()
+        checksums = f'{digest}  CLIProxyAPI_{bridge.VERSION.lstrip("v")}_linux_amd64.tar.gz\n'.encode()
         target = self.root / 'cli-proxy-api'
         target.write_bytes(b'existing installation')
         with patch.object(bridge, 'DATA', self.root), patch.object(bridge.platform, 'machine', return_value='x86_64'), \

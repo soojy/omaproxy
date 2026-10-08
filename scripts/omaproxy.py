@@ -28,18 +28,18 @@ DATA = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "om
 UNIT = "omaproxy.service"
 CURRENT_CONFIG = contextvars.ContextVar("connection", default=None)
 REPO = "router-for-me/CLIProxyAPI"
-VERSION = "v7.2.154"
+VERSION = "v8.0.13"
 # Trust anchors reviewed with this plugin snapshot; never derive these at install
 # time from release metadata. A backend update must review and change these pins.
 ARCHIVE_SHA256 = {
-    "amd64": "2a2256ceff048d5fa813aa54e8daa43e870b40e698d5cd21efad46e25aa5a1f9",
-    "aarch64": "3a0cd18d64e3b9990ca72136dbb1da97eedddade00ee6768e8b49fab1de6925e",
+    "amd64": "50ecffb47fdd81c8c5a9825a73a7a905ab66342337e274f39c4276b92d3533f3",
+    "aarch64": "f7ff98a128075ea8437dadd58a88f429a401e452a42ef7119304139185f5344f",
 }
 CHECKSUM_MAX_BYTES = 64 * 1024
 ARCHIVE_MAX_BYTES = 32 * 1024 * 1024
-BINARY_MAX_BYTES = 64 * 1024 * 1024
+BINARY_MAX_BYTES = 80 * 1024 * 1024
 METADATA_MAX_BYTES = 128 * 1024
-EXPANDED_ARCHIVE_MAX_BYTES = 66 * 1024 * 1024
+EXPANDED_ARCHIVE_MAX_BYTES = 82 * 1024 * 1024
 DOWNLOAD_CHUNK_BYTES = 64 * 1024
 REQUEST_MAX_BYTES = 2 * 1024 * 1024
 RELEASE_MEMBERS = {"cli-proxy-api", "LICENSE", "README.md", "README_CN.md", "config.example.yaml"}
@@ -204,7 +204,7 @@ def request(url, key=None, method="GET", body=None, timeout=4, response_headers=
         raise
 
 
-def api(route, method="GET", body=None, timeout=4, cfg=None):
+def api(route, method="GET", body=None, timeout=4, cfg=None, response_headers=None):
     cfg = cfg if cfg is not None else settings()
     if not cfg:
         raise ValueError("Set up the proxy first.")
@@ -220,7 +220,8 @@ def api(route, method="GET", body=None, timeout=4, cfg=None):
     if remote(cfg) and blocked.exists():
         raise ValueError("Remote management access was rejected. Check the key and remote access, then test and save in Settings.")
     try:
-        return request(base_url(cfg) + path, cfg["management_key"], method, body, timeout=timeout)
+        return request(base_url(cfg) + path, cfg["management_key"], method, body, timeout=timeout,
+                       response_headers=response_headers)
     except urllib.error.HTTPError as exc:
         if remote(cfg) and exc.code in (401, 403):
             private_write(blocked, "{}")
@@ -257,8 +258,9 @@ def status():
             result["error"] = "Proxy failed to start. Open Logs for details."
         return result
     try:
+        headers = {}
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-            auth = pool.submit(api, "auth-files", cfg=cfg)
+            auth = pool.submit(api, "auth-files", cfg=cfg, response_headers=headers)
             models = pool.submit(request, result["endpoint"] + "/models", cfg["api_key"])
             files = auth.result().get("files", [])
             # Explicit allowlist: never pass tokens, API keys, or raw auth files to QML.
@@ -271,6 +273,13 @@ def status():
                 account["plan"] = plan if isinstance(plan, str) else ""
             result["models"] = sorted({str(row["id"]) for row in models.result().get("data", [])})
         result["running"] = True
+        # Settings record installation intent; this header identifies the process.
+        import backend_updates
+        observed = backend_updates.normalized_version(next((value for key, value in headers.items()
+                                                           if key.lower() == "x-cpa-version"), ""))
+        if observed:
+            result["version"] = observed
+            result["version_source"] = "running"
     except (OSError, ValueError, urllib.error.URLError):
         result["error"] = "Service is active but its API is unavailable. Check Logs and configuration."
         result["quotas"] = read_json(CONFIG / "quotas.json", {"accounts": []})
@@ -419,10 +428,12 @@ def _extract_reviewed_tar(expanded, binary_path):
     binary_path.chmod(0o700)
 
 
-def install_binary():
+def install_binary(destination=None):
     arch = {"x86_64": "amd64", "aarch64": "aarch64"}.get(platform.machine())
     if platform.system() != "Linux" or arch not in ARCHIVE_SHA256:
         raise ValueError("Automatic installation supports Linux x86_64 and aarch64.")
+    import backend_security
+    backend_security.require_release_approval(VERSION, arch, ARCHIVE_SHA256[arch])
     filename = f'CLIProxyAPI_{VERSION.lstrip("v")}_linux_{arch}.tar.gz'
     base = f"https://github.com/{REPO}/releases/download/{VERSION}/"
     expected = ARCHIVE_SHA256[arch]
@@ -442,8 +453,12 @@ def install_binary():
         path.write_bytes(archive)
         binary = Path(temporary) / "cli-proxy-api"
         extract_binary(path, binary)
-        os.replace(binary, DATA / "cli-proxy-api")
-    return str(DATA / "cli-proxy-api")
+        import backend_updates
+        if backend_updates.probe(binary)["version"] != VERSION:
+            raise ValueError("Downloaded backend version does not match the reviewed release.")
+        target = Path(destination) if destination is not None else DATA / "cli-proxy-api"
+        os.replace(binary, target)
+    return str(target)
 
 
 def unit_quote(value):
@@ -504,6 +519,8 @@ def setup(binary=None, port=8317):
         raise ValueError("Port must be between 1024 and 65535.")
     working_directory = unit_working_directory(CONFIG)
     cfg = settings()
+    if cfg and not binary:
+        raise ValueError("Proxy is already configured. Use backend-update to update it safely.")
     if binary:
         binary = str(Path(binary).expanduser().resolve(strict=True))
         version = "custom"
@@ -742,7 +759,7 @@ def _main():
     p.add_argument("--port", type=int, default=8317)
     for name in ("status", "start", "stop", "restart", "dashboard", "logs", "config", "logs-view",
                  "auth-status", "auth-cancel", "auth-open", "auth-callback", "custom-add", "preferences", "repair",
-                 "connection-save", "connection-local",
+                 "check-updates", "backend-update", "backend-rollback", "connection-save", "connection-local",
                  "diagnostics", "capture-activity", "routing-save", "custom-list", "custom-save", "client-keys"):
         sub.add_parser(name)
     for name in ("client-create", "client-revoke", "client-copy"):
@@ -783,6 +800,12 @@ def _main():
             result = setup(args.binary, args.port)
         elif args.action == "status":
             result = status()
+        elif args.action in ("check-updates", "backend-update", "backend-rollback"):
+            require_local()
+            import backend_updates
+            bridge = sys.modules[__name__]
+            result = (backend_updates.check_updates(bridge) if args.action == "check-updates"
+                      else backend_updates.change_backend(bridge, rollback=args.action == "backend-rollback"))
         elif not settings():
             raise ValueError("Set up the proxy first.")
         elif args.action == "repair":

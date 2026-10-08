@@ -23,6 +23,13 @@ are removed on exit unless `--keep` is supplied. `--keep` retains the copied
 source, fixture state, command trace, log and smoke capture in a private `/tmp`
 directory; remove that directory after inspecting it.
 
+Startup IPC attempts share a fifteen-second deadline, with at most 50 attempts
+and a five-second timeout per attempt, capped by the remaining startup time.
+Smoke IPC calls have a ten-second timeout; a timed-out call aborts the smoke
+lane. The launcher terminates the preview and removes its temporary files on
+failure, escalating to a kill if the child does not stop, unless `--keep` was
+supplied to retain files for inspection.
+
 The launcher prints its configuration path and a scoped IPC command. Always
 pass that exact path when addressing the preview. For example:
 

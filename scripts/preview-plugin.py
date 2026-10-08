@@ -11,6 +11,9 @@ import time
 from urllib.parse import quote
 
 REPO = Path(__file__).resolve().parents[1]
+READINESS_IPC_TIMEOUT = 5
+READINESS_TIMEOUT = 15
+SMOKE_IPC_TIMEOUT = 10
 SHELL = r'''import QtQuick
 import Quickshell
 import Quickshell.Io
@@ -193,15 +196,24 @@ def main():
         with (root / "quickshell.log").open("w") as log:
             child = subprocess.Popen([runtime, "-p", str(root), "--no-color"], env=env, stdout=log, stderr=subprocess.STDOUT)
             # IPC is scoped by config path, so it never opens the installed plugin.
+            deadline = time.monotonic() + READINESS_TIMEOUT
+            ready = False
             for _ in range(50):
                 if child.poll() is not None:
                     print((root / "quickshell.log").read_text(), flush=True)
                     return child.returncode or 1
-                ipc = subprocess.run([runtime, "ipc", "-p", str(root), "call", "soojy.omaproxy", "showPage", args.page], capture_output=True, text=True)
-                if ipc.returncode == 0:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
                     break
-                time.sleep(0.1)
-            else:
+                try:
+                    ipc = subprocess.run([runtime, "ipc", "-p", str(root), "call", "soojy.omaproxy", "showPage", args.page], capture_output=True, text=True, timeout=min(READINESS_IPC_TIMEOUT, remaining))
+                except subprocess.TimeoutExpired:
+                    continue
+                if ipc.returncode == 0:
+                    ready = True
+                    break
+                time.sleep(min(0.1, max(0, deadline - time.monotonic())))
+            if not ready:
                 raise RuntimeError("Preview IPC target did not become ready. See " + str(root / "quickshell.log"))
             if args.smoke:
                 smoke(runtime, root)
@@ -217,18 +229,24 @@ def main():
     except KeyboardInterrupt:
         return 0
     finally:
-        if child and child.poll() is None:
-            child.terminate()
-            child.wait(timeout=5)
-        if args.keep:
-            print("Retained private preview files: " + str(root), flush=True)
-        else:
-            shutil.rmtree(root)
+        try:
+            if child and child.poll() is None:
+                child.terminate()
+                try:
+                    child.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    child.kill()
+                    child.wait(timeout=5)
+        finally:
+            if args.keep:
+                print("Retained private preview files: " + str(root), flush=True)
+            else:
+                shutil.rmtree(root)
 
 
 def smoke(runtime, root):
     def ipc(target, function, *args):
-        return subprocess.run([runtime, "ipc", "-p", str(root), "call", target, function, *args], check=True, capture_output=True, text=True).stdout.strip()
+        return subprocess.run([runtime, "ipc", "-p", str(root), "call", target, function, *args], check=True, capture_output=True, text=True, timeout=SMOKE_IPC_TIMEOUT).stdout.strip()
 
     def wait(predicate):
         for _ in range(100):

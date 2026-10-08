@@ -1,13 +1,15 @@
 # Backend installer trust policy
 
-Automatic setup supports the following **CLIProxyAPI v7.2.154** Linux release archives. Their SHA-256 digests are embedded in `ARCHIVE_SHA256` in [the installer](../scripts/omaproxy.py), so the exact reviewed plugin commit is the trust anchor.
+Automatic setup is currently withheld pending a patched upstream build and security review. The following **CLIProxyAPI v8.0.13** artifacts remain pinned for reproducible inspection, but are not approved for automatic installation. See the [backend security assessment](backend-security.md).
+
+Their SHA-256 digests are embedded in `ARCHIVE_SHA256` in [the installer](../scripts/omaproxy.py). The exact plugin commit binds artifact identity; the separate, currently empty security approval allowlist binds version, architecture and digest before setup or upgrade can download or execute a candidate.
 
 | Architecture | Archive | Pinned SHA-256 |
 | --- | --- | --- |
-| x86_64 | `CLIProxyAPI_7.2.154_linux_amd64.tar.gz` | `2a2256ceff048d5fa813aa54e8daa43e870b40e698d5cd21efad46e25aa5a1f9` |
-| aarch64 | `CLIProxyAPI_7.2.154_linux_aarch64.tar.gz` | `3a0cd18d64e3b9990ca72136dbb1da97eedddade00ee6768e8b49fab1de6925e` |
+| x86_64 | `CLIProxyAPI_8.0.13_linux_amd64.tar.gz` | `50ecffb47fdd81c8c5a9825a73a7a905ab66342337e274f39c4276b92d3533f3` |
+| aarch64 | `CLIProxyAPI_8.0.13_linux_aarch64.tar.gz` | `f7ff98a128075ea8437dadd58a88f429a401e452a42ef7119304139185f5344f` |
 
-These digests were checked on 2026-09-08 by downloading both [release archives](https://github.com/router-for-me/CLIProxyAPI/releases/tag/v7.2.154), computing their SHA-256 locally, and comparing them with GitHub's release-asset digests and the release checksum manifest. This establishes the reviewed snapshot; it does not prove the upstream executable is harmless. Later replacement of both an archive and its adjacent checksum cannot change the embedded expected digest.
+These digests were checked on 2026-10-03 against the [release metadata](https://github.com/router-for-me/CLIProxyAPI/releases/tag/v8.0.13). The amd64 archive was also downloaded, hashed locally and passed through the production extractor. Arm64 executable behavior was not tested here. This establishes the reviewed snapshot; it does not prove the upstream executable is harmless. Later replacement of both an archive and its adjacent checksum cannot change the embedded expected digest.
 
 The checksum manifest remains a consistency check only: its entry must match the embedded digest, and the downloaded archive must independently hash to that digest **before decompression or tar parsing**. Missing or duplicate checksum entries fail closed. Backend updates require reviewing the new artifacts, layout, limits, and digests in a new plugin commit; setup never discovers new trust anchors from remote metadata.
 
@@ -17,8 +19,8 @@ The checksum manifest remains a consistency check only: its entry must match the
 | --- | --- |
 | Checksum manifest download | 64 KiB |
 | Compressed archive download | 32 MiB |
-| Total expanded tar stream | 66 MiB |
-| Executable, declared and actually copied | 64 MiB |
+| Total expanded tar stream | 82 MiB |
+| Executable, declared and actually copied | 80 MiB |
 | Each allowed documentation/config example member | 128 KiB |
 
 Both HTTP responses are read in bounded chunks. Oversized declared lengths are rejected before reading; missing or dishonest lengths cannot bypass the byte counter. Truncated declared downloads are rejected too.
@@ -27,7 +29,7 @@ After digest validation, gzip data is streamed to a bounded temporary file befor
 
 Only `cli-proxy-api` is copied, with declared and actual size checks. Archive paths are never used as destination paths. Temporary files are removed on failure, and the existing installed executable is replaced atomically only after every check passes.
 
-The reviewed archive sizes are 21,578,431 bytes (amd64) and 19,464,005 bytes (aarch64). Their executable sizes are 65,247,208 and 59,471,464 bytes respectively. Both architectures have been validated through the bounded installer without running either downloaded executable during that check.
+The reviewed archive sizes are 22,952,865 bytes (amd64) and 20,682,811 bytes (aarch64). The amd64 executable is 69,217,256 bytes; it exceeded the old executable and inflation limits. It passed isolated configuration validation with fake credentials. See [backend updates](backend-updates.md) for staging, recovery and rollback behavior.
 
 ## Explicit local backend override
 

@@ -27,13 +27,20 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual(omaproxy.settings()["management_key"], "management-secret")
         self.assertNotEqual(result["connection_id"], omaproxy.connection_id(self.cfg))
 
-    def test_remote_repair_never_touches_local_state(self):
+    def test_remote_updater_and_repair_never_touch_local_state(self):
+        import backend_updates
         self.save()
-        with patch.object(omaproxy, "run") as run:
-            code, result = self.cli(["repair"])
-        self.assertEqual(code, 1)
-        self.assertIn("local proxy", result["error"])
-        run.assert_not_called()
+        for command in ("check-updates", "backend-update", "backend-rollback", "repair"):
+            with self.subTest(command=command), \
+                    patch.object(backend_updates, "change_backend") as change, \
+                    patch.object(backend_updates, "check_updates") as check, \
+                    patch.object(omaproxy, "run") as run:
+                code, result = self.cli([command])
+                self.assertEqual(code, 1)
+                self.assertIn("local proxy", result["error"])
+                change.assert_not_called()
+                check.assert_not_called()
+                run.assert_not_called()
 
     def test_named_keys_have_separate_registries_for_each_connection(self):
         sentinel = self.config / "client-keys.json"
