@@ -151,14 +151,25 @@ def connection_save(payload):
     for name in ("auth-error.json", "model-error.json"):
         (state_dir(cfg) / name).unlink(missing_ok=True)
     return {"connection_changed": True, "connection_id": connection_id(cfg),
+            "mode": "remote", "base_url": cfg["base_url"],
+            "has_api_key": bool(cfg["api_key"]),
             "message": "Remote connection saved. Accounts and limits come from this server."}
 
 
 def connection_local():
     connection = read_json(CONFIG / "connection.json", {})
+    remote_config = connection.get("remote", {})
+    if not isinstance(remote_config, dict):
+        remote_config = {}
+    remote_base_url = remote_config.get("base_url", "")
+    if not isinstance(remote_base_url, str):
+        remote_base_url = ""
     connection["mode"] = "local"
     private_write(CONFIG / "connection.json", json.dumps(connection) + "\n")
-    return {"connection_changed": True, "connection_id": "local", "message": "Local connection selected."}
+    return {"connection_changed": True, "connection_id": "local", "mode": "local",
+            "remote_base_url": remote_base_url,
+            "has_api_key": bool(remote_config.get("api_key")),
+            "message": "Local connection selected."}
 
 
 def account_rows(response):

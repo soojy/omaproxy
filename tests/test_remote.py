@@ -26,6 +26,11 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual(omaproxy.settings()["api_key"], "")
         self.assertEqual(omaproxy.settings()["management_key"], "management-secret")
         self.assertNotEqual(result["connection_id"], omaproxy.connection_id(self.cfg))
+        self.assertEqual(result["mode"], "remote")
+        self.assertEqual(result["base_url"], self.cfg["base_url"])
+        self.assertFalse(result["has_api_key"])
+        self.assertNotIn("management-secret", json.dumps(result))
+        self.assertNotIn("client-secret", json.dumps(result))
 
     def test_remote_updater_and_repair_never_touch_local_state(self):
         import backend_updates
@@ -100,12 +105,24 @@ class RemoteTests(unittest.TestCase):
             code, result = self.cli(["connection-save"], self.cfg)
         self.assertEqual(code, 0)
         self.assertTrue(result["connection_changed"])
+        self.assertEqual(result["mode"], "remote")
+        self.assertEqual(result["base_url"], self.cfg["base_url"])
+        self.assertTrue(result["has_api_key"])
+        self.assertEqual(set(result), {"connection_changed", "connection_id", "mode", "base_url", "has_api_key", "message"})
         self.assertEqual(self.config.joinpath("settings.json").read_text(), local)
         self.assertEqual((self.config / "connection.json").stat().st_mode & 0o777, 0o600)
         self.assertEqual(request.call_args_list[0].args, (self.cfg["base_url"] + "/v0/management/auth-files", "management-secret"))
         self.assertEqual(request.call_args_list[1].args, (self.cfg["base_url"] + "/v1/models", "client-secret"))
-        self.assertNotIn("secret", json.dumps(result))
-        omaproxy.connection_local()
+        for secret in ("management-secret", "client-secret"):
+            self.assertNotIn(secret, json.dumps(result))
+        local_code, local_result = self.cli(["connection-local"])
+        self.assertEqual(local_code, 0)
+        self.assertEqual(local_result["mode"], "local")
+        self.assertEqual(local_result["remote_base_url"], self.cfg["base_url"])
+        self.assertTrue(local_result["has_api_key"])
+        self.assertEqual(set(local_result), {"connection_changed", "connection_id", "mode", "remote_base_url", "has_api_key", "message"})
+        for secret in ("management-secret", "client-secret"):
+            self.assertNotIn(secret, json.dumps(local_result))
         self.assertEqual(omaproxy.settings()["port"], 18317)
 
     def test_invalid_urls_never_receive_credentials(self):
@@ -161,7 +178,14 @@ class RemoteTests(unittest.TestCase):
     def test_switch_to_unconfigured_local_retains_remote_url_without_installing(self):
         self.save()
         with patch.object(omaproxy, "run", side_effect=AssertionError("No install or service commands")):
-            self.assertEqual(self.cli(["connection-local"])[0], 0)
+            code, receipt = self.cli(["connection-local"])
+            self.assertEqual(code, 0)
+            self.assertEqual(receipt["mode"], "local")
+            self.assertEqual(receipt["remote_base_url"], self.cfg["base_url"])
+            self.assertTrue(receipt["has_api_key"])
+            self.assertEqual(set(receipt), {"connection_changed", "connection_id", "mode", "remote_base_url", "has_api_key", "message"})
+            self.assertNotIn("management-secret", json.dumps(receipt))
+            self.assertNotIn("client-secret", json.dumps(receipt))
             result = omaproxy.status()
         self.assertFalse(result["configured"])
         self.assertEqual(result["remote_base_url"], self.cfg["base_url"])
